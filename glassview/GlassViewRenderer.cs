@@ -11,15 +11,23 @@ namespace glassview;
 /// </summary>
 public class GlassViewRenderer : IRenderer
 {
+    private static readonly Vec3f ZeroOrigin = new(0, 0, 0);
+
+    // VS default line width (API doesn't provide a getter to save/restore)
+    private const float DefaultLineWidth = 1.6f;
+    private const float WireframeLineWidth = 4.0f;
+
     private readonly ICoreClientAPI capi;
+    private readonly Matrixf mvMat = new();
+    private readonly BlockPos tempPos = new(0);
+    private readonly List<int> glassMaterialIndices = new();
+    private readonly Vec4f wireframeColor = new(0.2f, 1.0f, 1.0f, 1.0f);
+
     private MeshRef wireframeMeshRef;
-    private readonly Matrixf mvMat = new Matrixf();
 
-    // Bright cyan color for wireframe - fully opaque for visibility
-    private readonly Vec4f wireframeColor = new Vec4f(0.2f, 1.0f, 1.0f, 1.0f);
-
-    public double RenderOrder => 0.45; // After terrain, before particles
-    public int RenderRange => 24;
+    // Render with debug wireframes (0.5), after terrain (0.37) and entities (0.4)
+    public double RenderOrder => 0.5;
+    public int RenderRange => 8;
 
     public GlassViewRenderer(ICoreClientAPI capi)
     {
@@ -29,18 +37,14 @@ public class GlassViewRenderer : IRenderer
 
     private void CreateWireframeMesh()
     {
-        // Create a wireframe cube using lines
-        MeshData wireframe = LineMeshUtil.GetCube(ColorUtil.WhiteArgb);
-
-        // Scale from -1..1 to 0..1 range and translate to unit cube position
+        var wireframe = LineMeshUtil.GetCube(ColorUtil.WhiteArgb);
         wireframe.Scale(new Vec3f(0, 0, 0), 0.5f, 0.5f, 0.5f);
         wireframe.Translate(0.5f, 0.5f, 0.5f);
 
-        // Set flags
         wireframe.Flags = new int[wireframe.VerticesCount];
         for (int i = 0; i < wireframe.Flags.Length; i++)
         {
-            wireframe.Flags[i] = 1 << 8; // Required for wireframe shader
+            wireframe.Flags[i] = 1 << 8;
         }
 
         wireframeMeshRef = capi.Render.UploadMesh(wireframe);
@@ -51,76 +55,58 @@ public class GlassViewRenderer : IRenderer
         var player = capi.World.Player;
         if (player == null) return;
 
-        var activeSlot = player.InventoryManager?.ActiveHotbarSlot;
-        var heldItem = activeSlot?.Itemstack?.Collectible;
-        if (heldItem == null) return;
-
-        bool holdingChisel = heldItem.Tool == EnumTool.Chisel;
-        if (!holdingChisel) return;
+        var heldItem = player.InventoryManager?.ActiveHotbarSlot?.Itemstack?.Collectible;
+        if (heldItem?.Tool != EnumTool.Chisel) return;
 
         var blockSel = player.CurrentBlockSelection;
         if (blockSel == null) return;
 
-        // Set up rendering using wireframe shader
-        var prog = capi.Render.GetEngineShader(EnumShaderProgram.Wireframe);
-        prog.Use();
-
-        capi.Render.GlToggleBlend(true, EnumBlendMode.Standard);
-        capi.Render.GLDepthMask(false);
-        capi.Render.GLEnableDepthTest();
-        capi.Render.LineWidth = 4.0f;
-
-        prog.UniformMatrix("projectionMatrix", capi.Render.CurrentProjectionMatrix);
-        prog.Uniform("origin", new Vec3f(0, 0, 0));
-        prog.Uniform("colorIn", wireframeColor);
-
-        var playerPos = player.Entity.CameraPos;
-        RenderGlassHighlights(prog, blockSel, playerPos);
-
-        prog.Stop();
-        capi.Render.LineWidth = 1.6f;
-
-        // Restore state
-        capi.Render.GLDepthMask(true);
-        capi.Render.GlEnableCullFace();
-    }
-
-    private void RenderGlassHighlights(IShaderProgram prog, BlockSelection blockSel, Vec3d playerPos)
-    {
-        // Check if the selected block is a microblock
         var selectedBe = capi.World.BlockAccessor.GetBlockEntity(blockSel.Position) as BlockEntityMicroBlock;
         if (selectedBe == null) return;
 
-        // Track which positions we've already rendered to avoid duplicates
-        var renderedPositions = new HashSet<BlockPos>();
+        // Skip if block is too far away
+        var playerPos = player.Entity.CameraPos;
+        double distSq = blockSel.Position.DistanceSqTo(playerPos.X, playerPos.Y, playerPos.Z);
+        if (distSq > RenderRange * RenderRange) return;
 
-        // Render the selected block and all neighboring microblocks
-        RenderGlassWireframes(prog, blockSel.Position, playerPos, renderedPositions);
+        var prog = capi.Render.GetEngineShader(EnumShaderProgram.Wireframe);
+        prog.Use();
+        prog.UniformMatrix("projectionMatrix", capi.Render.CurrentProjectionMatrix);
+        prog.Uniform("origin", ZeroOrigin);
+        prog.Uniform("colorIn", wireframeColor);
 
-        // Check all 6 neighboring positions for microblocks with glass
+        // Modify GL state for wireframe rendering
+        capi.Render.GLDepthMask(false);
+        capi.Render.LineWidth = WireframeLineWidth;
+
+        RenderGlassWireframes(prog, blockSel.Position, selectedBe, playerPos);
+
         foreach (var facing in BlockFacing.ALLFACES)
         {
-            var neighborPos = blockSel.Position.AddCopy(facing);
-            RenderGlassWireframes(prog, neighborPos, playerPos, renderedPositions);
+            tempPos.Set(blockSel.Position).Add(facing);
+            if (capi.World.BlockAccessor.GetBlockEntity(tempPos) is BlockEntityMicroBlock neighborBe)
+            {
+                RenderGlassWireframes(prog, tempPos, neighborBe, playerPos);
+            }
         }
+
+        prog.Stop();
+
+        // Restore GL state (Opaque stage defaults)
+        capi.Render.GLDepthMask(true);
+        capi.Render.LineWidth = DefaultLineWidth;
     }
 
-    private void RenderGlassWireframes(IShaderProgram prog, BlockPos pos, Vec3d playerPos, HashSet<BlockPos> renderedPositions)
+    private void RenderGlassWireframes(IShaderProgram prog, BlockPos pos, BlockEntityMicroBlock be, Vec3d playerPos)
     {
-        // Skip if we've already rendered this position
-        if (renderedPositions.Contains(pos)) return;
-        renderedPositions.Add(pos);
+        if (be.BlockIds == null || be.VoxelCuboids == null) return;
 
-        // Check if it's a chisel block entity
-        var be = capi.World.BlockAccessor.GetBlockEntity(pos) as BlockEntityMicroBlock;
-        if (be?.BlockIds == null || be.VoxelCuboids == null) return;
-
-        // Find which material indices are glass (transparent render pass)
-        var glassMaterialIndices = new HashSet<int>();
+        // Find glass material indices
+        glassMaterialIndices.Clear();
         for (int i = 0; i < be.BlockIds.Length; i++)
         {
             var block = capi.World.GetBlock(be.BlockIds[i]);
-            if (block != null && block.RenderPass == EnumChunkRenderPass.Transparent)
+            if (block?.RenderPass == EnumChunkRenderPass.Transparent)
             {
                 glassMaterialIndices.Add(i);
             }
@@ -131,27 +117,20 @@ public class GlassViewRenderer : IRenderer
         // Render each glass voxel cuboid
         foreach (var voxelCuboid in be.VoxelCuboids)
         {
-            // Decode the voxel cuboid
-            int x1, y1, z1, x2, y2, z2, material;
-            BlockEntityMicroBlock.FromUint(voxelCuboid, out x1, out y1, out z1, out x2, out y2, out z2, out material);
+            BlockEntityMicroBlock.FromUint(voxelCuboid, out int x1, out int y1, out int z1,
+                out int x2, out int y2, out int z2, out int material);
 
-            // Skip if not a glass material
             if (!glassMaterialIndices.Contains(material)) continue;
 
-            // Calculate world position and scale for this voxel cuboid
-            float voxelScale = 1f / 16f;
+            const float voxelScale = 1f / 16f;
             float posX = pos.X + x1 * voxelScale;
             float posY = pos.Y + y1 * voxelScale;
             float posZ = pos.Z + z1 * voxelScale;
-            float scaleX = (x2 - x1) * voxelScale;
-            float scaleY = (y2 - y1) * voxelScale;
-            float scaleZ = (z2 - z1) * voxelScale;
 
-            // Build modelview matrix - start with camera, then translate and scale
             mvMat.Identity();
             mvMat.Set(capi.Render.CameraMatrixOriginf);
             mvMat.Translate((float)(posX - playerPos.X), (float)(posY - playerPos.Y), (float)(posZ - playerPos.Z));
-            mvMat.Scale(scaleX, scaleY, scaleZ);
+            mvMat.Scale((x2 - x1) * voxelScale, (y2 - y1) * voxelScale, (z2 - z1) * voxelScale);
 
             prog.UniformMatrix("modelViewMatrix", mvMat.Values);
             capi.Render.RenderMesh(wireframeMeshRef);
