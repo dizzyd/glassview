@@ -1,0 +1,12 @@
+{
+    "type": "code",
+    "modid": "glassview",
+    "name": "GlassView",
+    "authors": [
+        "dizzyd"
+    ],
+    "description": "Makes glass more visible when chiseling by rendering a highlight overlay",
+    "version": "0.1.0",
+    "side": "client",
+    "dependencies": {}
+}
