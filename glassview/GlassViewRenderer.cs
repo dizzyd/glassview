@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using HarmonyLib;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
@@ -16,6 +18,40 @@ public class GlassViewRenderer : IRenderer
     // VS default line width (API doesn't provide a getter to save/restore)
     private const float DefaultLineWidth = 1.6f;
     private const float WireframeLineWidth = 4.0f;
+
+    // Fully qualified names of chisel item types to detect
+    private static readonly string[] ChiselTypeNames =
+    {
+        "Vintagestory.GameContent.ItemChisel",
+        "chisel.src.ItemHandPlaner",
+        "chisel.src.ItemLadderMaker",
+        "chisel.src.ItemPantograph",
+        "chisel.src.ItemPathMaker",
+        "chisel.src.ItemWedge",
+        "chiseltools.src.TrueChisel"
+    };
+
+    private static HashSet<Type> _chiselItemTypes;
+
+    public static void DiscoverChiselTypes(ICoreClientAPI api)
+    {
+        _chiselItemTypes = new HashSet<Type>();
+
+        foreach (var name in ChiselTypeNames)
+        {
+            var type = AccessTools.TypeByName(name);
+            if (type != null)
+            {
+                _chiselItemTypes.Add(type);
+                api.Logger.Notification("[GlassView] Loaded chisel type: {0}", name);
+            }
+        }
+    }
+
+    private static bool IsChiselItem(CollectibleObject item)
+    {
+        return _chiselItemTypes.Contains(item.GetType());
+    }
 
     private readonly ICoreClientAPI capi;
     private readonly Matrixf mvMat = new();
@@ -56,7 +92,7 @@ public class GlassViewRenderer : IRenderer
         if (player == null) return;
 
         var heldItem = player.InventoryManager?.ActiveHotbarSlot?.Itemstack?.Collectible;
-        if (heldItem?.Tool != EnumTool.Chisel) return;
+        if (heldItem == null || !IsChiselItem(heldItem)) return;
 
         var blockSel = player.CurrentBlockSelection;
         if (blockSel == null) return;

@@ -17,6 +17,7 @@ public class GlassViewModSystem : ModSystem
     {
         base.StartClientSide(api);
 
+        GlassViewRenderer.DiscoverChiselTypes(api);
         renderer = new GlassViewRenderer(api);
         api.Event.RegisterRenderer(renderer, EnumRenderStage.Opaque, "glassview");
 
