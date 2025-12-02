@@ -15,10 +15,6 @@ public class GlassViewRenderer : IRenderer
 {
     private static readonly Vec3f ZeroOrigin = new(0, 0, 0);
 
-    // VS default line width (API doesn't provide a getter to save/restore)
-    private const float DefaultLineWidth = 1.6f;
-    private const float WireframeLineWidth = 4.0f;
-
     // Fully qualified names of chisel item types to detect
     private static readonly string[] ChiselTypeNames =
     {
@@ -113,7 +109,6 @@ public class GlassViewRenderer : IRenderer
 
         // Modify GL state for wireframe rendering
         capi.Render.GLDepthMask(false);
-        capi.Render.LineWidth = WireframeLineWidth;
 
         RenderGlassWireframes(prog, blockSel.Position, selectedBe, playerPos);
 
@@ -128,9 +123,8 @@ public class GlassViewRenderer : IRenderer
 
         prog.Stop();
 
-        // Restore GL state (Opaque stage defaults)
+        // Restore GL state
         capi.Render.GLDepthMask(true);
-        capi.Render.LineWidth = DefaultLineWidth;
     }
 
     private void RenderGlassWireframes(IShaderProgram prog, BlockPos pos, BlockEntityMicroBlock be, Vec3d playerPos)
